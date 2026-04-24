@@ -5,10 +5,10 @@ import pandas as pd
 from pathlib import Path
 from neo4j import GraphDatabase
 
-NEO4J_URI      = "neo4j+s://406508c5.databases.neo4j.io"
-NEO4J_USER     = "406508c5"
-NEO4J_PASSWORD = "ltBLw-nl5IyRewPm6sjmvcKCfRx2POWsA4b_AfuglKc"
-NEO4J_DATABASE = "406508c5"
+NEO4J_URI      = "neo4j+s://eb56ade1.databases.neo4j.io"
+NEO4J_USER     = "eb56ade1"
+NEO4J_PASSWORD = "EyOEzzUXhcqXtbKtDgt8VDGjpP3nFUZec5M83nhDEzc"
+NEO4J_DATABASE = "eb56ade1"
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..")
 
@@ -43,7 +43,7 @@ PAPER_COL_MAP = {
     'doi': 'doi', 'title': 'title', 'paper_title': 'title',
     'author': 'author', 'authors': 'author', 'name_author': 'author',
     'publication_title': 'publication_title', 'publication': 'publication_title',
-    'publicationdate': 'publication_date', 'publication_date': 'publication_date',
+    'publicationdate': 'publication_date', 'publication_date': 'publication_date', 'PublicationDate': 'publication_date',
     'url': 'url', 'keywords': 'keywords',
     'abstract': 'abstract', 'publisher': 'publisher',
     'field_of_study': 'field_of_study', 'fieldofstudy': 'field_of_study',
@@ -54,7 +54,7 @@ PAPER_COL_MAP = {
 }
 
 METHOD_COL_MAP = {
-    'method_name': 'name', 'methodname': 'name', 'name': 'name',
+    'method_name': 'name', 'methodname': 'name', 'name': 'name', 'Method Name': 'name', 'method name': 'name',
     'method_key': 'method_key', 'methodkey': 'method_key',
     'doi': 'doi', 'doi_method_block': 'doi',
     'description': 'description',
@@ -110,7 +110,19 @@ def insert_paper(tx, row, source_file):
         WITH p
         MATCH (c:Contributor {source_file: $source_file})
         CREATE (c)-[:CONTRIBUTED]->(p)
-    """, source_file=source_file, **row)
+    """, source_file=source_file, doi=row.get('doi'),
+    title=row.get('title'),
+    author=row.get('author'),
+    publication_title=row.get('publication_title'),
+    publication_date=row.get('publication_date'),
+    url=row.get('url'),
+    keywords=row.get('keywords'),
+    abstract=row.get('abstract'),
+    publisher=row.get('publisher'),
+    field_of_study=row.get('field_of_study'),
+    is_data_fusion=row.get('is_data_fusion'),
+    classification_reason=row.get('classification_reason')
+           )
 
 
 def insert_method(tx, row, source_file):
@@ -122,7 +134,15 @@ def insert_method(tx, row, source_file):
         WITH m
         MATCH (c:Contributor {source_file: $source_file})
         CREATE (c)-[:CONTRIBUTED]->(m)
-    """, source_file=source_file, **row)
+    """,
+    source_file=source_file,
+    name=row.get('name') or row.get('method_name') ,
+    method_key=row.get('method_key'),
+    doi=row.get('doi'),
+    description=row.get('description'),
+    u1=row.get('u1'),
+    u3=row.get('u3')
+    )
 
 
 def insert_dataset(tx, row, source_file):
@@ -138,7 +158,19 @@ def insert_dataset(tx, row, source_file):
         WITH d
         MATCH (c:Contributor {source_file: $source_file})
         CREATE (c)-[:CONTRIBUTED]->(d)
-    """, source_file=source_file, **row)
+    """, source_file=source_file, doi=row.get('doi'),
+    data_name=row.get('data_name'),
+    dataset_url=row.get('dataset_url'),
+    method_key=row.get('method_key'),
+    data_type=row.get('data_type'),
+    collection_method=row.get('collection_method'),
+    u2=row.get('u2'),
+    spatial_coverage=row.get('spatial_coverage'),
+    temporal_coverage=row.get('temporal_coverage'),
+    format=row.get('format'),
+    license=row.get('license'),
+    provenance=row.get('provenance')
+           )
 
 
 def link_by_doi(session):
@@ -153,6 +185,143 @@ def link_by_doi(session):
         MERGE (p)-[:HAS_DATASET]->(d)
     """)
 
+
+def import_single_sheet(filepath, session, source_file, is_csv=False):
+    """Import data from a single-sheet Excel or CSV file."""
+    try:
+        if is_csv:
+            # Try different encodings
+            try:
+                df = pd.read_csv(filepath, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    df = pd.read_csv(filepath, encoding='latin1')
+                except:
+                    df = pd.read_csv(filepath, encoding='cp1252')
+        else:
+            df = pd.read_excel(filepath)
+    except Exception as e:
+        print(f"  Error reading file: {e}")
+        return 0, 0, 0
+
+    # Clean column names
+    df.columns = [normalize_col(str(col)) for col in df.columns]
+
+    paper_rows = []
+    method_rows = []
+    dataset_rows = []
+
+    for _, row in df.iterrows():
+        # Check if this row has paper data
+        paper = {}
+        for std_col, src_col in PAPER_COL_MAP.items():
+            if src_col in df.columns:
+                val = clean(row.get(src_col))
+                if val is not None and val != '':
+                    paper[std_col] = val
+        if paper:  # Only add if has at least one field
+            paper_rows.append(paper)
+
+        # Check for method data
+        method = {}
+        for std_col, src_col in METHOD_COL_MAP.items():
+            if src_col in df.columns:
+                val = clean(row.get(src_col))
+                if val is not None and val != '':
+                    method[std_col] = val
+        if method:  # Only add if has at least one field
+            method_rows.append(method)
+
+        # Check for dataset data
+        dataset = {}
+        for std_col, src_col in DATASET_COL_MAP.items():
+            if src_col in df.columns:
+                val = clean(row.get(src_col))
+                if val is not None and val != '':
+                    dataset[std_col] = val
+        if dataset:  # Only add if has at least one field
+            dataset_rows.append(dataset)
+
+    # Insert into Neo4j
+    for paper in paper_rows:
+        try:
+            session.execute_write(insert_paper, paper, source_file)
+        except Exception as e:
+            print(f"    Error inserting paper: {e}")
+
+    for method in method_rows:
+        try:
+            session.execute_write(insert_method, method, source_file)
+        except Exception as e:
+            print(f"    Error inserting method: {e}")
+
+    for dataset in dataset_rows:
+        try:
+            session.execute_write(insert_dataset, dataset, source_file)
+        except Exception as e:
+            print(f"    Error inserting dataset: {e}")
+
+    return len(paper_rows), len(method_rows), len(dataset_rows)
+
+
+def import_three_sheet(filepath, session, source_file):
+    """Import data from an Excel file with three separate sheets."""
+    xls = pd.ExcelFile(filepath)
+
+    paper_rows = []
+    method_rows = []
+    dataset_rows = []
+
+    for sheet in xls.sheet_names:
+        sheet_lower = sheet.lower()
+        df = pd.read_excel(filepath, sheet_name=sheet)
+        df.columns = [normalize_col(str(col)) for col in df.columns]
+
+        # Look for papers in 'doi' sheet OR sheets with 'paper'
+        if sheet_lower == 'doi' or 'paper' in sheet_lower:
+            for _, row in df.iterrows():
+                paper = {}
+                for std_col, src_col in PAPER_COL_MAP.items():
+                    if src_col in df.columns:
+                        val = clean(row.get(src_col))
+                        if val is not None:
+                            paper[std_col] = val
+                if paper:
+                    paper_rows.append(paper)
+
+        # Look for methods in 'fusion_method' sheet OR sheets with 'method'
+        elif sheet_lower == 'fusion_method' or 'method' in sheet_lower:
+            for _, row in df.iterrows():
+                method = {}
+                for std_col, src_col in METHOD_COL_MAP.items():
+                    if src_col in df.columns:
+                        val = clean(row.get(src_col))
+                        if val is not None:
+                            method[std_col] = val
+                if method:
+                    method_rows.append(method)
+
+        # Look for datasets in 'data' sheet OR sheets with 'data' or 'dataset'
+        elif sheet_lower == 'data' or 'data' in sheet_lower or 'dataset' in sheet_lower:
+            for _, row in df.iterrows():
+                dataset = {}
+                for std_col, src_col in DATASET_COL_MAP.items():
+                    if src_col in df.columns:
+                        val = clean(row.get(src_col))
+                        if val is not None:
+                            dataset[std_col] = val
+                if dataset:
+                    dataset_rows.append(dataset)
+
+    # Insert into Neo4j
+    for paper in paper_rows:
+        session.execute_write(insert_paper, paper, source_file)
+    for method in method_rows:
+        session.execute_write(insert_method, method, source_file)
+    for dataset in dataset_rows:
+        session.execute_write(insert_dataset, dataset, source_file)
+
+    return len(paper_rows), len(method_rows), len(dataset_rows)
 
 def main():
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
